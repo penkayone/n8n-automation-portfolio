@@ -4,7 +4,7 @@ Four production-grade automation systems built with n8n, each solving a differen
 
 ## The Workflows
 
-### 01 — [Enterprise AI Lead Intelligence & Outreach System](./01-lead-intelligence/)
+### 01 — [Enterprise AI Lead Intelligence & Outreach System]
 
 A lead comes in through a webhook — the system validates it against 20+ rules, scores it 0-100 across 12 weighted factors, then runs three separate AI calls: intent analysis, company research, and personalized outreach generation. Leads get routed by tier (Enterprise/Qualified/Nurture/Cold) with automatic team assignment and SLA. Full intelligence dossier lands in Telegram within 8 seconds.
 
@@ -12,7 +12,7 @@ A lead comes in through a webhook — the system validates it against 20+ rules,
 
 ---
 
-### 02 — [Competitive Intelligence & Market Monitor](./02-market-intelligence/)
+### 02 — [Competitive Intelligence & Market Monitor]
 
 Runs every 12 hours. Pulls articles from 3 RSS sources, scores them through a weighted multi-group NLP keyword engine (5 keyword groups, title vs body weighting, source weighting), deduplicates across sources using fuzzy title matching, then sends the top articles to AI for strategic trend analysis. Delivers an executive briefing to Telegram with keyword heatmaps, competitor alerts, and actionable insights.
 
@@ -20,7 +20,7 @@ Runs every 12 hours. Pulls articles from 3 RSS sources, scores them through a we
 
 ---
 
-### 03 — [AI Customer Support & Ticket Intelligence Bot](./03-support-bot/)
+### 03 — [AI Customer Support & Ticket Intelligence Bot]
 
 An interactive Telegram bot that handles customer support. Parses incoming messages, detects commands vs support requests, classifies tickets with AI (7 categories, 4 urgency levels, sentiment detection), computes SLA from a urgency-category matrix, assigns to the right team, generates an empathetic AI response, replies to the customer, and sends a full internal ticket alert to the support team. All in under 4 seconds.
 
@@ -28,7 +28,7 @@ An interactive Telegram bot that handles customer support. Parses incoming messa
 
 ---
 
-### 04 — [Multi-API Company Research & Enrichment Pipeline](./04-company-research/)
+### 04 — [Multi-API Company Research & Enrichment Pipeline]
 
 Takes a domain name and builds a complete company profile by querying 3 DNS APIs (MX, TXT, A records), fetching the website homepage, and extracting metadata from HTML. Detects 40+ technologies from DNS records and HTML signatures — email provider, hosting, SaaS services, web frameworks, analytics tools. Computes a tech sophistication score and sends everything to AI for company profiling with sales recommendations.
 
