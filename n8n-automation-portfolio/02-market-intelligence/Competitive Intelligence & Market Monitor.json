@@ -1,0 +1,524 @@
+{
+  "name": "Competitive Intelligence & Market Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 12
+            }
+          ]
+        }
+      },
+      "id": "42f71a42-23fa-40c9-a2b1-d3d3784bd43a",
+      "name": "1. Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1664,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 1: MONITORING CONFIGURATION ENGINE\n// Define sources, keywords, weights, thresholds\n// ================================================================\n\nconst config = {\n  run_id: 'INTEL-' + Date.now(),\n  started_at: new Date().toISOString(),\n  \n  // RSS feeds to monitor (different categories)\n  feeds: [\n    {\n      name: 'HackerNews',\n      url: 'https://hnrss.org/newest?points=50&count=20',\n      category: 'developer_community',\n      weight: 1.5\n    },\n    {\n      name: 'TechCrunch',\n      url: 'https://techcrunch.com/feed/',\n      category: 'startup_news',\n      weight: 1.2\n    },\n    {\n      name: 'The Verge',\n      url: 'https://www.theverge.com/rss/index.xml',\n      category: 'tech_general',\n      weight: 1.0\n    }\n  ],\n  \n  // Keyword groups with weights\n  keyword_groups: {\n    direct_competitors: {\n      keywords: ['n8n', 'zapier', 'make.com', 'integromat', 'workato', 'tray.io'],\n      weight: 3.0,\n      alert_on_match: true\n    },\n    core_technology: {\n      keywords: ['workflow automation', 'automation platform', 'integration platform', 'iPaaS'],\n      weight: 2.5,\n      alert_on_match: false\n    },\n    ai_trends: {\n      keywords: ['ai agent', 'langchain', 'rag', 'vector database', 'llm', 'openai', 'anthropic', 'ai orchestration'],\n      weight: 2.0,\n      alert_on_match: false\n    },\n    market_signals: {\n      keywords: ['no-code', 'low-code', 'api integration', 'business automation', 'process automation'],\n      weight: 1.5,\n      alert_on_match: false\n    },\n    funding_signals: {\n      keywords: ['series a', 'series b', 'raised', 'funding', 'acquisition', 'acquired'],\n      weight: 1.8,\n      alert_on_match: false\n    }\n  },\n  \n  // Thresholds\n  min_relevance_score: 2.0,\n  max_articles_output: 10,\n  dedup_title_similarity: 0.7\n};\n\nreturn [{ json: config }];"
+      },
+      "id": "c0774443-0eb9-418f-9404-4b6f5ddc78bf",
+      "name": "2. Config Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1424,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split config into individual feed tasks\nconst config = $input.first().json;\nreturn config.feeds.map(feed => ({\n  json: {\n    ...feed,\n    keyword_groups: config.keyword_groups,\n    min_relevance_score: config.min_relevance_score,\n    run_id: config.run_id\n  }\n}));"
+      },
+      "id": "2c657427-2da3-41a0-a733-e21b768dc339",
+      "name": "3. Split Into Feeds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1184,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "dda83649-7f22-47a8-a829-8c431520c4f4",
+      "name": "4. Fetch RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [
+        -960,
+        128
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 2: NLP KEYWORD ENGINE\n// Multi-group keyword matching with weighted scoring\n// Title matches get 3x weight, body matches 1x\n// Group weights multiply the base score\n// ================================================================\n\nconst articles = $input.all();\nconst feedInfo = $('3. Split Into Feeds').first().json;\nconst groups = feedInfo.keyword_groups;\nconst minScore = feedInfo.min_relevance_score;\n\nconst results = [];\n\nfor (const article of articles) {\n  const a = article.json;\n  if (!a.title) continue;\n  \n  const title = (a.title || '').toLowerCase();\n  const body = (a.contentSnippet || a.description || a.content || '').toLowerCase();\n  const fullText = title + ' ' + body;\n  \n  let totalScore = 0;\n  const matchedGroups = [];\n  const allKeywords = [];\n  let hasAlertKeyword = false;\n  \n  // Check each keyword group\n  for (const [groupName, group] of Object.entries(groups)) {\n    const groupMatches = [];\n    \n    for (const keyword of group.keywords) {\n      const kw = keyword.toLowerCase();\n      if (!fullText.includes(kw)) continue;\n      \n      // Title match = 3x, body match = 1x\n      let matchScore = 1.0;\n      if (title.includes(kw)) matchScore = 3.0;\n      \n      // Apply group weight\n      matchScore *= group.weight;\n      \n      // Apply feed weight\n      matchScore *= feedInfo.weight;\n      \n      totalScore += matchScore;\n      groupMatches.push(keyword);\n      allKeywords.push(keyword);\n      \n      if (group.alert_on_match) hasAlertKeyword = true;\n    }\n    \n    if (groupMatches.length > 0) {\n      matchedGroups.push({\n        group: groupName,\n        keywords: groupMatches,\n        count: groupMatches.length\n      });\n    }\n  }\n  \n  // Skip if below threshold\n  if (totalScore < minScore) continue;\n  \n  results.push({\n    title: a.title,\n    link: a.link || a.guid || '#',\n    source: feedInfo.name,\n    source_category: feedInfo.category,\n    published: a.pubDate || a.isoDate || null,\n    snippet: body.slice(0, 200),\n    relevance_score: Math.round(totalScore * 100) / 100,\n    matched_keywords: allKeywords,\n    matched_groups: matchedGroups,\n    has_competitor_mention: hasAlertKeyword,\n    keyword_count: allKeywords.length,\n    run_id: feedInfo.run_id\n  });\n}\n\n// Sort by relevance\nresults.sort((a, b) => b.relevance_score - a.relevance_score);\n\nif (results.length === 0) {\n  return [{ json: { empty: true, source: feedInfo.name, run_id: feedInfo.run_id } }];\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "8cff1455-b8cc-44ea-9196-4bef051de8e2",
+      "name": "5. NLP Keyword Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 3: AGGREGATION & DEDUPLICATION\n// Merge results from all feeds, deduplicate, compute stats\n// ================================================================\n\nconst allItems = $input.all().map(i => i.json);\n\n// Filter out empty feed results\nconst articles = allItems.filter(a => !a.empty);\n\nif (articles.length === 0) {\n  return [{ json: {\n    status: 'no_matches',\n    total_scanned: allItems.length,\n    message: 'No articles matched keywords in this scan cycle.',\n    timestamp: new Date().toISOString()\n  }}];\n}\n\n// Deduplication by title similarity\nconst unique = [];\nconst seenTitles = [];\n\nfor (const article of articles) {\n  const titleLower = article.title.toLowerCase();\n  const words = titleLower.split(/\\s+/).filter(w => w.length > 3);\n  \n  // Check against already seen titles\n  let isDuplicate = false;\n  for (const seen of seenTitles) {\n    const overlap = words.filter(w => seen.includes(w)).length;\n    const similarity = overlap / Math.max(words.length, 1);\n    if (similarity > 0.6) {\n      isDuplicate = true;\n      break;\n    }\n  }\n  \n  if (!isDuplicate) {\n    unique.push(article);\n    seenTitles.push(titleLower);\n  }\n}\n\n// Sort by relevance and take top 10\nunique.sort((a, b) => b.relevance_score - a.relevance_score);\nconst top = unique.slice(0, 10);\n\n// Compute analytics\nconst kwFrequency = {};\nconst groupFrequency = {};\nconst sourceCount = {};\nlet competitorMentions = 0;\n\ntop.forEach(a => {\n  a.matched_keywords.forEach(kw => { kwFrequency[kw] = (kwFrequency[kw] || 0) + 1; });\n  a.matched_groups.forEach(g => { groupFrequency[g.group] = (groupFrequency[g.group] || 0) + g.count; });\n  sourceCount[a.source] = (sourceCount[a.source] || 0) + 1;\n  if (a.has_competitor_mention) competitorMentions++;\n});\n\nconst topKeywords = Object.entries(kwFrequency)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 8)\n  .map(([kw, count]) => ({ keyword: kw, mentions: count }));\n\nconst topGroups = Object.entries(groupFrequency)\n  .sort((a, b) => b[1] - a[1])\n  .map(([group, count]) => ({ group, mentions: count }));\n\nreturn [{ json: {\n  articles: top,\n  analytics: {\n    total_scanned: allItems.length,\n    total_matched: articles.length,\n    after_dedup: unique.length,\n    returned: top.length,\n    competitor_mentions: competitorMentions,\n    top_keywords: topKeywords,\n    group_breakdown: topGroups,\n    source_distribution: sourceCount,\n    avg_relevance: Math.round(top.reduce((s, a) => s + a.relevance_score, 0) / top.length * 100) / 100\n  },\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "ae800201-f54e-4b0b-a943-012b5fad5cbd",
+      "name": "6. Aggregate & Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "no_matches",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "id": "23d26d26-52bb-48cb-a2a1-0ec8f249929c"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "50aab145-7f5b-4af4-8094-2ce61dfe8159",
+      "name": "7. Has Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { notification: '📡 Market Scan Complete\\n\\nNo relevant articles found in this cycle.\\nMonitoring ' + $input.first().json.total_scanned + ' sources.\\nNext scan in 12 hours.' } }];"
+      },
+      "id": "b69b94ac-398e-4be1-8629-8b5c9122df93",
+      "name": "8. No Data Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build AI analysis prompt from aggregated data\nconst data = $input.first().json;\nconst articles = data.articles;\nconst analytics = data.analytics;\n\nconst articleList = articles.map((a, i) => \n  (i + 1) + '. [' + a.source + '] \"' + a.title + '\"' +\n  '\\n   Keywords: ' + a.matched_keywords.join(', ') +\n  '\\n   Relevance: ' + a.relevance_score +\n  (a.has_competitor_mention ? ' ⚠️ COMPETITOR MENTION' : '')\n).join('\\n\\n');\n\nconst prompt = 'You are a senior competitive intelligence analyst for a workflow automation company competing with Zapier and Make.com.\\n\\n' +\n  'Analyze these ' + articles.length + ' articles from the last 12 hours:\\n\\n' +\n  articleList + '\\n\\n' +\n  'Analytics: ' + analytics.competitor_mentions + ' competitor mentions, ' +\n  'top keywords: ' + analytics.top_keywords.map(k => k.keyword + '(' + k.mentions + ')').join(', ') + '\\n\\n' +\n  'Provide your analysis in this exact format:\\n' +\n  'MARKET TRENDS (2-3 bullet points)\\n' +\n  'COMPETITIVE MOVES (any competitor activity detected)\\n' +\n  'OPPORTUNITIES (actionable business opportunities)\\n' +\n  'THREAT LEVEL: LOW/MEDIUM/HIGH (with 1 sentence why)\\n\\n' +\n  'Be specific. Reference article numbers. No generic observations.';\n\nreturn [{ json: { ...data, ai_prompt: prompt } }];"
+      },
+      "id": "cda9055f-81b6-42d4-ae68-45354e8bab02",
+      "name": "9. Build Analysis Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a competitive intelligence analyst. Be specific and actionable. Reference article numbers in your analysis.\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.ai_prompt) }} }\n  ],\n  \"max_tokens\": 700,\n  \"temperature\": 0.3\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b724a087-c0bc-48f3-ab8d-9ee84422e39e",
+      "name": "10. AI Trend Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        192
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 4: BUILD EXECUTIVE INTELLIGENCE BRIEFING\n// Combines analytics + AI analysis + article links\n// ================================================================\nconst data = $('9. Build Analysis Prompt').first().json;\nconst aiRaw = $input.first().json;\nconst articles = data.articles;\nconst stats = data.analytics;\nlet aiAnalysis = 'AI analysis unavailable for this cycle.';\ntry { aiAnalysis = aiRaw.choices[0].message.content; } catch(e) {}\n// Format date\nconst now = new Date();\nconst dateStr = now.toISOString().split('T')[0];\nconst timeStr = now.toISOString().split('T')[1].slice(0, 5);\n// Build article links\nconst articleLinks = articles.slice(0, 8).map((a, i) => {\n  const score = a.relevance_score;\n  const flag = a.has_competitor_mention ? ' !!' : '';\n  return (i + 1) + '. ' + a.source + ' - ' + a.title.slice(0, 55) + flag + '\\n   Score: ' + score + ' - ' + a.matched_keywords.slice(0, 3).join(', ');\n}).join('\\n');\n// Build keyword heatmap\nconst kwHeat = stats.top_keywords.map(k => k.keyword + ' ' + k.mentions).join(' | ');\n// Build group breakdown\nconst groupBreak = stats.group_breakdown.map(g => g.group.replace(/_/g, ' ') + ': ' + g.mentions).join(' | ');\nconst briefing = [\n  'COMPETITIVE INTELLIGENCE BRIEFING',\n  dateStr + ' ' + timeStr + ' UTC',\n  '',\n  'SCAN METRICS',\n  '  Sources scanned: ' + Object.keys(stats.source_distribution).length,\n  '  Articles matched: ' + stats.total_matched + ' After dedup: ' + stats.after_dedup,\n  '  Competitor mentions: ' + stats.competitor_mentions,\n  '  Avg relevance: ' + stats.avg_relevance,\n  '',\n  'KEYWORD HEATMAP',\n  '  ' + kwHeat,\n  '',\n  'GROUP BREAKDOWN',\n  '  ' + groupBreak,\n  '',\n  'AI STRATEGIC ANALYSIS',\n  '',\n  aiAnalysis,\n  '',\n  'TOP ARTICLES',\n  '',\n  articleLinks,\n  '',\n  'Automated by n8n Intelligence Pipeline v2.0'\n].join('\\n');\n// Clean special characters that break Telegram\nconst clean = briefing.replace(/[_*\\[\\]()~`>#+\\-=|{}.!]/g, function(match) {\n  if (match === '-' || match === '.') return match;\n  return ' ';\n}).slice(0, 4000);\nreturn [{ json: {\n  notification: clean,\n  analytics: stats,\n  ai_analysis: aiAnalysis,\n  article_count: articles.length\n}}];"
+      },
+      "id": "245fd51e-2a0d-4f23-9b98-611f9aab8397",
+      "name": "11. Build Executive Brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID_HERE",
+        "text": "={{ $json.notification }}",
+        "additionalFields": {}
+      },
+      "id": "00d8fd50-cdb0-400e-a19f-cf4d17bb6a81",
+      "name": "12. Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        128
+      ],
+      "webhookId": "b3cbb723-1877-4de3-881a-1b26dd12ff9a",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 5: COMPETITOR ALERT CHECK\n// If any competitor was mentioned, send separate urgent alert\n// ================================================================\n\nconst data = $('9. Build Analysis Prompt').first().json;\nconst competitorArticles = data.articles.filter(a => a.has_competitor_mention);\n\nif (competitorArticles.length === 0) {\n  return [{ json: { has_competitor_alert: false } }];\n}\n\nconst alertLines = [\n  '⚠️ COMPETITOR ALERT ⚠️',\n  '',\n  competitorArticles.length + ' article(s) mention direct competitors:',\n  ''\n];\n\ncompetitorArticles.forEach((a, i) => {\n  alertLines.push((i + 1) + '. ' + a.title);\n  alertLines.push('   Source: ' + a.source + ' | Keywords: ' + a.matched_keywords.join(', '));\n  alertLines.push('   Link: ' + a.link);\n  alertLines.push('');\n});\n\nalertLines.push('Action: Review and assess competitive impact.');\n\nreturn [{ json: {\n  has_competitor_alert: true,\n  competitor_notification: alertLines.join('\\n'),\n  competitor_count: competitorArticles.length\n}}];"
+      },
+      "id": "2fa4d54f-4cb1-4de1-8a52-79f813b51216",
+      "name": "13. Competitor Alert Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.has_competitor_alert }}",
+              "rightValue": "={{ true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "873db721-b4bb-4fdf-8272-4563071b63b4",
+      "name": "14. Has Competitor?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID_HERE",
+        "text": "={{ $json.competitor_notification }}",
+        "additionalFields": {}
+      },
+      "id": "ffefb8ef-b09b-46c1-89a7-d4d4aef779d3",
+      "name": "15. Send Competitor Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        240
+      ],
+      "webhookId": "0d4854b8-2b80-4e22-874e-0c2d6777a364",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// EXECUTION LOG\nconst stats = $('11. Build Executive Brief').first().json.analytics || {};\nreturn [{ json: {\n  event: 'intelligence_scan_complete',\n  articles_found: stats.total_matched || 0,\n  after_dedup: stats.after_dedup || 0,\n  competitor_mentions: stats.competitor_mentions || 0,\n  avg_relevance: stats.avg_relevance || 0,\n  sources_scanned: Object.keys(stats.source_distribution || {}).length,\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "4a989992-81ee-45b3-8e8b-2ec363b8814d",
+      "name": "16. Execution Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        480
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "1. Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "2. Config Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Config Engine": {
+      "main": [
+        [
+          {
+            "node": "3. Split Into Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Split Into Feeds": {
+      "main": [
+        [
+          {
+            "node": "4. Fetch RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Fetch RSS": {
+      "main": [
+        [
+          {
+            "node": "5. NLP Keyword Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. NLP Keyword Scoring": {
+      "main": [
+        [
+          {
+            "node": "6. Aggregate & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Aggregate & Deduplicate": {
+      "main": [
+        [
+          {
+            "node": "7. Has Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Has Data?": {
+      "main": [
+        [
+          {
+            "node": "8. No Data Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "9. Build Analysis Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. No Data Message": {
+      "main": [
+        [
+          {
+            "node": "12. Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Build Analysis Prompt": {
+      "main": [
+        [
+          {
+            "node": "10. AI Trend Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. AI Trend Analysis": {
+      "main": [
+        [
+          {
+            "node": "11. Build Executive Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Build Executive Brief": {
+      "main": [
+        [
+          {
+            "node": "12. Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Competitor Alert Check": {
+      "main": [
+        [
+          {
+            "node": "14. Has Competitor?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14. Has Competitor?": {
+      "main": [
+        [
+          {
+            "node": "15. Send Competitor Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16. Execution Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15. Send Competitor Alert": {
+      "main": [
+        [
+          {
+            "node": "16. Execution Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Send to Telegram": {
+      "main": [
+        [
+          {
+            "node": "13. Competitor Alert Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c86848b1-c630-4fbc-b68a-8e869a3f79ad",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dd4334221ef81d6d59573eb9f82a223063c36805f707f47d81b73799fdfc0225"
+  },
+  "id": "Fj7bm92mZhsxYsuo",
+  "tags": [
+    {
+      "updatedAt": "2026-03-13T19:06:17.026Z",
+      "createdAt": "2026-03-13T19:06:17.026Z",
+      "id": "QvG8jymPOaXRs13v",
+      "name": "enterprise"
+    },
+    {
+      "name": "competitive-intelligence",
+      "id": "qVa9jT0sc3VGpjti",
+      "updatedAt": "2026-03-14T22:40:59.770Z",
+      "createdAt": "2026-03-14T22:40:59.770Z"
+    },
+    {
+      "name": "nlp",
+      "id": "7mwpkhrE6iszPHlv",
+      "updatedAt": "2026-03-14T22:40:59.796Z",
+      "createdAt": "2026-03-14T22:40:59.796Z"
+    },
+    {
+      "name": "market-monitor",
+      "id": "mAEB7cLNgitFO9hY",
+      "updatedAt": "2026-03-14T22:40:59.821Z",
+      "createdAt": "2026-03-14T22:40:59.821Z"
+    },
+    {
+      "name": "production",
+      "id": "A4qPgXEhhulEeHrh",
+      "updatedAt": "2026-03-13T18:12:00.349Z",
+      "createdAt": "2026-03-13T18:12:00.349Z"
+    }
+  ]
+}

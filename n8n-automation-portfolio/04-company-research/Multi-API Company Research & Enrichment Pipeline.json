@@ -1,0 +1,449 @@
+{
+  "name": "Multi-API Company Research & Enrichment Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "company-research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e2a8ff40-95d7-4624-a7de-dbbaa86f5021",
+      "name": "1. Research API Gateway",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -16
+      ],
+      "webhookId": "company-research"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nif (!body.domain && !body.email && !body.company) {\n  throw new Error('Provide at least one: domain, email, or company');\n}\n\nlet domain = null;\nif (body.domain) {\n  domain = body.domain.replace(/^https?:\\/\\//, '').replace(/^www\\./, '').split('/')[0].toLowerCase();\n} else if (body.email) {\n  domain = body.email.split('@')[1].toLowerCase();\n}\n\nconst freeEmails = ['gmail.com','yahoo.com','hotmail.com','outlook.com','mail.ru','yandex.ru','protonmail.com'];\nif (domain && freeEmails.includes(domain)) {\n  domain = null;\n}\n\nreturn [{ json: {\n  research_id: 'RES-' + Date.now(),\n  input_domain: domain,\n  input_company: body.company || null,\n  input_email: body.email || null,\n  input_context: body.context || null,\n  has_domain: !!domain,\n  started_at: new Date().toISOString()\n}}];"
+      },
+      "id": "8fd10a59-d13a-4e84-9ee8-18cd912c906a",
+      "name": "2. Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://dns.google/resolve?name={{ $json.input_domain }}&type=MX",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "2f459ef7-1b2e-4f73-9707-50d536dc8f48",
+      "name": "3. DNS MX Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -16
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "=https://dns.google/resolve?name={{ $('2. Parse Input').first().json.input_domain }}&type=TXT",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "250d87b7-5619-4149-a714-7d5cffa5847f",
+      "name": "4. DNS TXT Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        704,
+        -16
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "=https://dns.google/resolve?name={{ $('2. Parse Input').first().json.input_domain }}&type=A",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "d8013dbd-4d19-45e9-aa6f-2f684e89f208",
+      "name": "5. DNS A Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        -16
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('2. Parse Input').first().json;\nconst mxRaw = $('3. DNS MX Lookup').first().json;\nconst txtRaw = $('4. DNS TXT Lookup').first().json;\nconst aRaw = $('5. DNS A Lookup').first().json;\n\nconst mxRecords = [];\nlet emailProvider = 'unknown';\ntry {\n  const answers = mxRaw.Answer || [];\n  answers.forEach(a => {\n    const mx = (a.data || '').toLowerCase();\n    mxRecords.push(mx);\n    if (mx.includes('google') || mx.includes('gmail')) emailProvider = 'Google Workspace';\n    else if (mx.includes('outlook') || mx.includes('microsoft')) emailProvider = 'Microsoft 365';\n    else if (mx.includes('zoho')) emailProvider = 'Zoho Mail';\n    else if (mx.includes('yandex')) emailProvider = 'Yandex Mail';\n    else if (mx.includes('protonmail')) emailProvider = 'ProtonMail';\n    else if (mx.includes('mimecast')) emailProvider = 'Mimecast (Enterprise)';\n    else if (mx.includes('barracuda')) emailProvider = 'Barracuda (Enterprise)';\n  });\n} catch(e) {}\n\nconst txtRecords = [];\nconst detectedServices = [];\ntry {\n  const answers = txtRaw.Answer || [];\n  answers.forEach(a => {\n    const txt = (a.data || '').toLowerCase();\n    txtRecords.push(txt);\n    if (txt.includes('v=spf1')) detectedServices.push('SPF');\n    if (txt.includes('google-site-verification')) detectedServices.push('Google Search Console');\n    if (txt.includes('facebook-domain-verification')) detectedServices.push('Facebook Business');\n    if (txt.includes('docusign')) detectedServices.push('DocuSign');\n    if (txt.includes('hubspot')) detectedServices.push('HubSpot');\n    if (txt.includes('salesforce')) detectedServices.push('Salesforce');\n    if (txt.includes('zendesk')) detectedServices.push('Zendesk');\n    if (txt.includes('atlassian')) detectedServices.push('Atlassian');\n    if (txt.includes('stripe')) detectedServices.push('Stripe');\n    if (txt.includes('shopify')) detectedServices.push('Shopify');\n    if (txt.includes('mailchimp') || txt.includes('mandrill')) detectedServices.push('Mailchimp');\n    if (txt.includes('sendgrid')) detectedServices.push('SendGrid');\n    if (txt.includes('ms=ms')) detectedServices.push('Microsoft Verified');\n    if (txt.includes('apple-domain-verification')) detectedServices.push('Apple Business');\n    if (txt.includes('amazonses')) detectedServices.push('Amazon SES');\n    if (txt.includes('intercom')) detectedServices.push('Intercom');\n  });\n} catch(e) {}\n\nconst ipAddresses = [];\nlet hostingProvider = 'unknown';\ntry {\n  const answers = aRaw.Answer || [];\n  answers.forEach(a => {\n    const ip = a.data || '';\n    ipAddresses.push(ip);\n    if (ip.startsWith('104.') || ip.startsWith('172.67') || ip.startsWith('173.245')) hostingProvider = 'Cloudflare';\n    else if (ip.startsWith('13.') || ip.startsWith('52.') || ip.startsWith('54.')) hostingProvider = 'AWS';\n    else if (ip.startsWith('34.') || ip.startsWith('35.')) hostingProvider = 'Google Cloud';\n    else if (ip.startsWith('40.') || ip.startsWith('20.')) hostingProvider = 'Microsoft Azure';\n    else if (ip.startsWith('188.114') || ip.startsWith('104.16')) hostingProvider = 'Cloudflare';\n    else if (ip.startsWith('76.76')) hostingProvider = 'Vercel';\n    else if (ip.startsWith('185.199')) hostingProvider = 'GitHub Pages';\n    else if (ip.startsWith('151.101')) hostingProvider = 'Fastly CDN';\n  });\n} catch(e) {}\n\nlet techScore = 0;\nif (emailProvider !== 'unknown') techScore += 15;\nif (emailProvider.includes('Enterprise')) techScore += 10;\nif (detectedServices.length >= 5) techScore += 25;\nelse if (detectedServices.length >= 3) techScore += 15;\nelse if (detectedServices.length >= 1) techScore += 8;\nif (hostingProvider === 'AWS' || hostingProvider === 'Google Cloud') techScore += 15;\nelse if (hostingProvider === 'Cloudflare') techScore += 10;\nif (detectedServices.includes('HubSpot') || detectedServices.includes('Salesforce')) techScore += 10;\nif (detectedServices.includes('Stripe') || detectedServices.includes('Shopify')) techScore += 10;\n\nlet techLevel = 'basic';\nif (techScore >= 50) techLevel = 'enterprise';\nelse if (techScore >= 30) techLevel = 'advanced';\nelse if (techScore >= 15) techLevel = 'intermediate';\n\nreturn [{ json: {\n  ...input,\n  dns_data: {\n    mx_records: mxRecords,\n    txt_records_count: txtRecords.length,\n    ip_addresses: ipAddresses,\n    email_provider: emailProvider,\n    hosting_provider: hostingProvider,\n    detected_services: [...new Set(detectedServices)],\n    services_count: [...new Set(detectedServices)].length\n  },\n  tech_assessment: { score: techScore, level: techLevel }\n}}];"
+      },
+      "id": "9ca37523-32f3-484e-9116-9d1ce7786b2f",
+      "name": "6. Analyze Tech Stack",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://{{ $json.input_domain }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "59c05794-e089-41e7-864d-902a447f3815",
+      "name": "7. Fetch Website",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1408,
+        -16
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const prevData = $('6. Analyze Tech Stack').first().json;\nconst response = $input.first().json;\n\nlet html = '';\nif (typeof response === 'string') html = response;\nelse if (response.data) html = response.data;\nelse html = JSON.stringify(response).slice(0, 5000);\n\nconst getMetaContent = (html, name) => {\n  const patterns = [\n    new RegExp('<meta[^>]*name=[\"\\']' + name + '[\"\\'][^>]*content=[\"\\']([^\"\\']*)[\"\\'\\]', 'i'),\n    new RegExp('<meta[^>]*property=[\"\\']' + name + '[\"\\'][^>]*content=[\"\\']([^\"\\']*)[\"\\'\\]', 'i')\n  ];\n  for (const p of patterns) {\n    const m = html.match(p);\n    if (m) return m[1].trim();\n  }\n  return null;\n};\n\nconst titleMatch = html.match(/<title[^>]*>([^<]*)<\\/title>/i);\nconst title = titleMatch ? titleMatch[1].trim() : null;\nconst description = getMetaContent(html, 'description');\nconst ogTitle = getMetaContent(html, 'og:title');\nconst ogDesc = getMetaContent(html, 'og:description');\n\nconst htmlLower = html.toLowerCase();\nconst webTech = [];\nif (htmlLower.includes('wp-content') || htmlLower.includes('wordpress')) webTech.push('WordPress');\nif (htmlLower.includes('shopify')) webTech.push('Shopify');\nif (htmlLower.includes('wix.com')) webTech.push('Wix');\nif (htmlLower.includes('squarespace')) webTech.push('Squarespace');\nif (htmlLower.includes('react')) webTech.push('React');\nif (htmlLower.includes('_next')) webTech.push('Next.js');\nif (htmlLower.includes('vue')) webTech.push('Vue.js');\nif (htmlLower.includes('angular')) webTech.push('Angular');\nif (htmlLower.includes('bootstrap')) webTech.push('Bootstrap');\nif (htmlLower.includes('tailwind')) webTech.push('Tailwind CSS');\nif (htmlLower.includes('googletagmanager')) webTech.push('Google Tag Manager');\nif (htmlLower.includes('google-analytics') || htmlLower.includes('gtag')) webTech.push('Google Analytics');\nif (htmlLower.includes('hotjar')) webTech.push('Hotjar');\nif (htmlLower.includes('intercom')) webTech.push('Intercom');\nif (htmlLower.includes('hubspot')) webTech.push('HubSpot');\nif (htmlLower.includes('zendesk')) webTech.push('Zendesk');\nif (htmlLower.includes('drift')) webTech.push('Drift');\nif (htmlLower.includes('crisp')) webTech.push('Crisp');\nif (htmlLower.includes('segment')) webTech.push('Segment');\nif (htmlLower.includes('stripe')) webTech.push('Stripe');\nif (htmlLower.includes('recaptcha')) webTech.push('reCAPTCHA');\nif (htmlLower.includes('cloudflare')) webTech.push('Cloudflare');\n\nreturn [{ json: {\n  ...prevData,\n  website: {\n    title: title || ogTitle,\n    description: description || ogDesc,\n    detected_web_tech: [...new Set(webTech)],\n    web_tech_count: [...new Set(webTech)].length,\n    page_loaded: html.length > 100\n  }\n}}];"
+      },
+      "id": "c35de955-f419-4d2d-9a80-b312baf03d3d",
+      "name": "8. Extract Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\n\nconst allTech = [\n  ...d.dns_data.detected_services,\n  ...d.website.detected_web_tech,\n  d.dns_data.email_provider !== 'unknown' ? d.dns_data.email_provider : null,\n  d.dns_data.hosting_provider !== 'unknown' ? d.dns_data.hosting_provider + ' (hosting)' : null\n].filter(Boolean);\n\nconst uniqueTech = [...new Set(allTech)];\n\nlet updatedScore = d.tech_assessment.score;\nif (d.website.web_tech_count >= 3) updatedScore += 15;\nelse if (d.website.web_tech_count >= 1) updatedScore += 8;\nif (d.website.page_loaded) updatedScore += 5;\n\nlet updatedLevel = 'basic';\nif (updatedScore >= 60) updatedLevel = 'enterprise';\nelse if (updatedScore >= 35) updatedLevel = 'advanced';\nelse if (updatedScore >= 18) updatedLevel = 'intermediate';\n\nconst prompt = 'You are a B2B company research analyst. Based on the technical data below, create a company profile. Respond ONLY with valid JSON, no markdown:\\n' +\n  '{\"company_summary\": \"2-3 sentences\", \"estimated_size\": \"startup|smb|mid_market|enterprise\", \"estimated_employees\": \"range\", \"likely_industry\": \"specific industry\", \"tech_maturity\": \"low|medium|high\", \"budget_indicator\": \"bootstrapped|funded|enterprise_budget\", \"sales_approach\": \"1 sentence\", \"key_insight\": \"most interesting finding\"}\\n\\n' +\n  'Data:\\n' +\n  'Domain: ' + d.input_domain + '\\n' +\n  'Website title: ' + (d.website.title || 'N/A') + '\\n' +\n  'Description: ' + (d.website.description || 'N/A') + '\\n' +\n  'Email: ' + d.dns_data.email_provider + '\\n' +\n  'Hosting: ' + d.dns_data.hosting_provider + '\\n' +\n  'Tech stack: ' + uniqueTech.join(', ') + '\\n' +\n  'Tech score: ' + updatedScore + '/100 (' + updatedLevel + ')\\n' +\n  'Total services: ' + uniqueTech.length + '\\n' +\n  (d.input_company ? 'Company name: ' + d.input_company + '\\n' : '') +\n  (d.input_context ? 'Context: ' + d.input_context + '\\n' : '');\n\nreturn [{ json: {\n  ...d,\n  all_tech: uniqueTech,\n  tech_assessment: { score: updatedScore, level: updatedLevel },\n  ai_prompt: prompt\n}}];"
+      },
+      "id": "665923d4-4b2a-4fc9-98cc-eaaab6614f86",
+      "name": "9. Merge & Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1888,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a B2B company research analyst. Respond ONLY with valid JSON, no markdown.\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.ai_prompt) }} }\n  ],\n  \"max_tokens\": 300,\n  \"temperature\": 0.3\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "9144ef11-1572-412b-8ff9-e9c95d51e151",
+      "name": "10. AI Company Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2128,
+        -16
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('9. Merge & Build Prompt').first().json;\nconst raw = $input.first().json;\n\nlet profile = {\n  company_summary: 'AI profiling unavailable',\n  estimated_size: 'unknown',\n  estimated_employees: 'unknown',\n  likely_industry: 'unknown',\n  tech_maturity: 'unknown',\n  budget_indicator: 'unknown',\n  sales_approach: 'Standard outreach',\n  key_insight: 'No AI insight available'\n};\n\ntry {\n  const content = raw.choices[0].message.content;\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (match) profile = JSON.parse(match[0]);\n} catch(e) {}\n\nreturn [{ json: { ...data, ai_profile: profile } }];"
+      },
+      "id": "2a482250-4255-488f-9111-58967b042c53",
+      "name": "11. Parse AI Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2368,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst dns = d.dns_data;\nconst web = d.website;\nconst ai = d.ai_profile;\nconst tech = d.tech_assessment;\n\nconst report = [\n  '=== COMPANY RESEARCH REPORT ===',\n  '',\n  'Domain: ' + d.input_domain,\n  d.input_company ? 'Company: ' + d.input_company : '',\n  '',\n  '--- AI PROFILE ---',\n  '',\n  ai.company_summary,\n  '',\n  '  Size: ' + ai.estimated_size + ' - ' + ai.estimated_employees + ' employees',\n  '  Industry: ' + ai.likely_industry,\n  '  Budget: ' + ai.budget_indicator,\n  '  Tech maturity: ' + ai.tech_maturity,\n  '',\n  '  Key insight:',\n  '  ' + ai.key_insight,\n  '',\n  '--- TECH STACK ---',\n  '  ' + d.all_tech.length + ' technologies detected',\n  '  Score: ' + tech.score + '/100 - ' + tech.level,\n  '',\n  '  Email provider: ' + dns.email_provider,\n  '  Hosting: ' + dns.hosting_provider,\n  '',\n  '  Detected services:',\n  '  ' + d.all_tech.slice(0, 8).join(', '),\n  d.all_tech.length > 8 ? '  ' + d.all_tech.slice(8).join(', ') : '',\n  '',\n  '--- WEBSITE ---',\n  '  Title: ' + (web.title || 'N/A'),\n  '  ' + (web.description || 'No description').slice(0, 120),\n  '',\n  '--- SALES RECOMMENDATION ---',\n  '  ' + ai.sales_approach,\n  '',\n  '=== END REPORT ===',\n  'ID: ' + d.research_id,\n  'Processed in ' + (Date.now() - new Date(d.started_at).getTime()) + 'ms'\n].filter(Boolean).join('\\n');\n\nconst clean = report.replace(/[_*\\[\\]()~`>#+\\=|{}.!]/g, function(m) {\n  if (m === '-' || m === '.') return m;\n  return ' ';\n}).slice(0, 4000);\n\nreturn [{ json: { ...d, report: clean } }];"
+      },
+      "id": "0e178768-4ce1-4865-8b2b-1e6bed44d0b4",
+      "name": "12. Build Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2608,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID_HERE",
+        "text": "={{ $json.report }}",
+        "additionalFields": {}
+      },
+      "id": "825d0032-fcfd-4caa-8a93-2c6d3cfe8867",
+      "name": "13. Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2848,
+        -16
+      ],
+      "webhookId": "7c4d0f7c-fb1a-42c8-9217-380bed79845d",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('11. Parse AI Profile').first().json;\nreturn [{ json: {\n  event: 'company_researched',\n  research_id: d.research_id,\n  domain: d.input_domain,\n  tech_score: d.tech_assessment.score,\n  tech_level: d.tech_assessment.level,\n  services_found: d.all_tech.length,\n  ai_size: d.ai_profile.estimated_size,\n  ai_industry: d.ai_profile.likely_industry,\n  email_provider: d.dns_data.email_provider,\n  hosting: d.dns_data.hosting_provider,\n  processing_ms: Date.now() - new Date(d.started_at).getTime(),\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "681a7472-834f-4f79-96f7-658b87d0f0f9",
+      "name": "14. Research Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2848,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  research_id: $('11. Parse AI Profile').first().json.research_id,\n  domain: $('11. Parse AI Profile').first().json.input_domain,\n  ai_profile: $('11. Parse AI Profile').first().json.ai_profile,\n  tech_stack: {\n    score: $('11. Parse AI Profile').first().json.tech_assessment.score,\n    level: $('11. Parse AI Profile').first().json.tech_assessment.level,\n    technologies: $('11. Parse AI Profile').first().json.all_tech\n  },\n  website: {\n    title: $('11. Parse AI Profile').first().json.website.title,\n    description: $('11. Parse AI Profile').first().json.website.description\n  }\n}) }}",
+        "options": {}
+      },
+      "id": "470ad2a8-7cb8-4833-8e33-a39e2d422ae5",
+      "name": "15. API Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3088,
+        -16
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "1. Research API Gateway": {
+      "main": [
+        [
+          {
+            "node": "2. Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Parse Input": {
+      "main": [
+        [
+          {
+            "node": "3. DNS MX Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. DNS MX Lookup": {
+      "main": [
+        [
+          {
+            "node": "4. DNS TXT Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. DNS TXT Lookup": {
+      "main": [
+        [
+          {
+            "node": "5. DNS A Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. DNS A Lookup": {
+      "main": [
+        [
+          {
+            "node": "6. Analyze Tech Stack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Analyze Tech Stack": {
+      "main": [
+        [
+          {
+            "node": "7. Fetch Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Fetch Website": {
+      "main": [
+        [
+          {
+            "node": "8. Extract Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Extract Metadata": {
+      "main": [
+        [
+          {
+            "node": "9. Merge & Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Merge & Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "10. AI Company Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. AI Company Profile": {
+      "main": [
+        [
+          {
+            "node": "11. Parse AI Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Parse AI Profile": {
+      "main": [
+        [
+          {
+            "node": "12. Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Build Report": {
+      "main": [
+        [
+          {
+            "node": "13. Send to Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "14. Research Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Send to Telegram": {
+      "main": [
+        [
+          {
+            "node": "15. API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "94cb3b94-a816-42bc-a0b8-b845b043ad0c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dd4334221ef81d6d59573eb9f82a223063c36805f707f47d81b73799fdfc0225"
+  },
+  "id": "AogYYacM6iHFEPZ5",
+  "tags": [
+    {
+      "name": "production",
+      "id": "A4qPgXEhhulEeHrh",
+      "updatedAt": "2026-03-13T18:12:00.349Z",
+      "createdAt": "2026-03-13T18:12:00.349Z"
+    },
+    {
+      "name": "data-enrichment",
+      "id": "C8u3N4jxUqC2IdHN",
+      "updatedAt": "2026-03-15T10:17:52.717Z",
+      "createdAt": "2026-03-15T10:17:52.717Z"
+    },
+    {
+      "updatedAt": "2026-03-13T19:06:17.026Z",
+      "createdAt": "2026-03-13T19:06:17.026Z",
+      "id": "QvG8jymPOaXRs13v",
+      "name": "enterprise"
+    },
+    {
+      "name": "multi-api",
+      "id": "iZsUrCWZ6crYqkBC",
+      "updatedAt": "2026-03-15T10:17:52.739Z",
+      "createdAt": "2026-03-15T10:17:52.739Z"
+    },
+    {
+      "name": "company-research",
+      "id": "rxegbowrty6G1E5r",
+      "updatedAt": "2026-03-15T10:17:52.761Z",
+      "createdAt": "2026-03-15T10:17:52.761Z"
+    }
+  ]
+}

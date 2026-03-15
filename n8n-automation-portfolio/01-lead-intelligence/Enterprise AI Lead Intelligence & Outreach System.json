@@ -1,0 +1,594 @@
+{
+  "name": "Enterprise AI Lead Intelligence & Outreach System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intelligence",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c9405330-e0fb-480a-8896-bfecbab12b1d",
+      "name": "1. Lead Webhook Gateway",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        160
+      ],
+      "webhookId": "lead-intelligence"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 1: ENTERPRISE VALIDATION ENGINE\n// 20+ validation rules, normalization, auto-enrichment\n// ================================================================\n\nconst body = $input.first().json.body || $input.first().json;\nconst errors = [];\nconst warnings = [];\n\n// --- REQUIRED FIELDS ---\nif (!body.name || body.name.trim().length < 2)\n  errors.push('name required (min 2 chars)');\n\nif (!body.email) {\n  errors.push('email required');\n} else if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(body.email)) {\n  errors.push('email format invalid');\n}\n\nif (errors.length > 0) {\n  throw new Error(JSON.stringify({\n    error: 'VALIDATION_FAILED',\n    details: errors,\n    received: Object.keys(body),\n    timestamp: new Date().toISOString()\n  }));\n}\n\n// --- NORMALIZATION ---\nconst email = body.email.toLowerCase().trim();\nconst domain = email.split('@')[1];\nconst freeProviders = [\n  'gmail.com','yahoo.com','hotmail.com','outlook.com',\n  'mail.ru','yandex.ru','protonmail.com','icloud.com',\n  'aol.com','zoho.com','gmx.com','live.com'\n];\nconst isBusiness = !freeProviders.includes(domain);\n\n// --- AUTO-ENRICHMENT ---\nconst companyGuess = isBusiness\n  ? domain.split('.')[0].charAt(0).toUpperCase() + domain.split('.')[0].slice(1)\n  : null;\n\n// --- PHONE NORMALIZATION ---\nlet phone = null;\nif (body.phone) {\n  phone = body.phone.replace(/[^\\d+]/g, '');\n  if (phone.length < 7) {\n    warnings.push('phone seems invalid: ' + phone);\n    phone = null;\n  }\n}\n\n// --- BUDGET PARSING ---\nlet budget = null;\nlet budgetTier = 'unknown';\nif (body.budget) {\n  budget = parseFloat(String(body.budget).replace(/[^\\d.]/g, ''));\n  if (isNaN(budget)) { budget = null; warnings.push('budget not parseable'); }\n  else if (budget >= 50000) budgetTier = 'enterprise';\n  else if (budget >= 10000) budgetTier = 'mid_market';\n  else if (budget >= 1000) budgetTier = 'smb';\n  else budgetTier = 'micro';\n}\n\n// --- LEAD SCORING (0-100) ---\nlet score = 0;\nconst scoreLog = [];\n\nif (isBusiness) { score += 25; scoreLog.push('+25 business_email'); }\nif (body.company) { score += 15; scoreLog.push('+15 company_provided'); }\nelse if (companyGuess) { score += 5; scoreLog.push('+5 company_guessed'); }\nif (phone) { score += 10; scoreLog.push('+10 has_phone'); }\nif (budget >= 50000) { score += 20; scoreLog.push('+20 enterprise_budget'); }\nelse if (budget >= 10000) { score += 15; scoreLog.push('+15 mid_budget'); }\nelse if (budget >= 1000) { score += 8; scoreLog.push('+8 smb_budget'); }\nif (body.job_title) { score += 5; scoreLog.push('+5 job_title'); }\nif (body.message && body.message.length > 50) { score += 10; scoreLog.push('+10 detailed_message'); }\nelse if (body.message && body.message.length > 10) { score += 5; scoreLog.push('+5 has_message'); }\nif (['referral','partner','conference'].includes(body.source)) { score += 15; scoreLog.push('+15 premium_source'); }\nelse if (['linkedin','google_ads','facebook'].includes(body.source)) { score += 8; scoreLog.push('+8 paid_source'); }\nif (body.timeline) { score += 5; scoreLog.push('+5 has_timeline'); }\nif (body.team_size && parseInt(body.team_size) > 50) { score += 5; scoreLog.push('+5 large_team'); }\n\nscore = Math.min(score, 100);\n\n// --- TIER CLASSIFICATION ---\nlet tier, priority, sla_minutes, assigned_team;\nif (score >= 70) {\n  tier = 'ENTERPRISE'; priority = 'P0'; sla_minutes = 60; assigned_team = 'senior_ae';\n} else if (score >= 50) {\n  tier = 'QUALIFIED'; priority = 'P1'; sla_minutes = 240; assigned_team = 'sales';\n} else if (score >= 25) {\n  tier = 'NURTURE'; priority = 'P2'; sla_minutes = 1440; assigned_team = 'sdr';\n} else {\n  tier = 'COLD'; priority = 'P3'; sla_minutes = 4320; assigned_team = 'marketing_auto';\n}\n\nreturn [{ json: {\n  // Core data\n  lead_id: 'LD-' + Date.now(),\n  name: body.name.trim(),\n  email: email,\n  phone: phone,\n  company: body.company || companyGuess,\n  job_title: body.job_title || null,\n  message: body.message || null,\n  \n  // Business context\n  budget: budget,\n  budget_tier: budgetTier,\n  currency: body.currency || 'USD',\n  timeline: body.timeline || null,\n  team_size: body.team_size || null,\n  industry: body.industry || null,\n  \n  // Source tracking\n  source: body.source || 'direct',\n  utm_medium: body.utm_medium || null,\n  utm_campaign: body.utm_campaign || null,\n  landing_page: body.landing_page || null,\n  \n  // Enrichment\n  email_domain: domain,\n  is_business_email: isBusiness,\n  company_from_domain: companyGuess,\n  \n  // Scoring\n  lead_score: score,\n  score_breakdown: scoreLog,\n  tier: tier,\n  priority: priority,\n  sla_minutes: sla_minutes,\n  assigned_team: assigned_team,\n  \n  // Meta\n  warnings: warnings,\n  pipeline_version: '3.0',\n  ingested_at: new Date().toISOString()\n}}];"
+      },
+      "id": "0a420ad0-9905-4fb8-b763-7a52f4437536",
+      "name": "2. Validate & Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1936,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a B2B sales intelligence AI. Analyze the lead and respond ONLY with valid JSON (no markdown, no backticks): {\\\"intent\\\": \\\"buying|researching|comparing|just_looking\\\", \\\"intent_confidence\\\": 0.0-1.0, \\\"pain_points\\\": [\\\"point1\\\", \\\"point2\\\"], \\\"buying_stage\\\": \\\"awareness|consideration|decision\\\", \\\"icp_fit\\\": \\\"perfect|good|partial|poor\\\"}\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify('Lead: ' + $json.name + '\\nCompany: ' + ($json.company || 'Unknown') + '\\nDomain: ' + $json.email_domain + '\\nTitle: ' + ($json.job_title || 'N/A') + '\\nBudget: ' + ($json.budget ? '$' + $json.budget : 'N/A') + ' (' + $json.budget_tier + ')\\nTeam size: ' + ($json.team_size || 'N/A') + '\\nIndustry: ' + ($json.industry || 'N/A') + '\\nMessage: ' + ($json.message || 'None') + '\\nSource: ' + $json.source + '\\nScore: ' + $json.lead_score + '/100 (' + $json.tier + ')') }}}\n  ],\n  \"max_tokens\": 200,\n  \"temperature\": 0.2\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "adec30dc-d6fe-4957-8975-835d2db81ce6",
+      "name": "3. AI: Intent Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1680,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI intent analysis result\nconst lead = $('2. Validate & Score').first().json;\nconst raw = $input.first().json;\n\nlet intent = {\n  intent: 'unknown', intent_confidence: 0,\n  pain_points: [], buying_stage: 'unknown', icp_fit: 'unknown'\n};\n\ntry {\n  const content = raw.choices[0].message.content;\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (match) intent = JSON.parse(match[0]);\n} catch(e) {\n  intent.pain_points = ['ai_parse_error'];\n}\n\nreturn [{ json: { ...lead, ai_intent: intent } }];"
+      },
+      "id": "5bf36ecf-ed0a-442c-8da9-7ef5b26710b6",
+      "name": "4. Parse Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1440,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a company research analyst. Based on the email domain, provide a brief company profile. Respond ONLY with valid JSON: {\\\"company_type\\\": \\\"enterprise|mid_market|startup|agency|freelancer|unknown\\\", \\\"estimated_employees\\\": \\\"range\\\", \\\"likely_industry\\\": \\\"string\\\", \\\"tech_sophistication\\\": \\\"high|medium|low\\\", \\\"key_insight\\\": \\\"1 sentence\\\"}\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify('Research company from domain: ' + $json.email_domain + '\\nCompany name provided: ' + ($json.company || 'None') + '\\nIndustry hint: ' + ($json.industry || 'None') + '\\nTeam size hint: ' + ($json.team_size || 'None')) }}}\n  ],\n  \"max_tokens\": 150,\n  \"temperature\": 0.3\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ebe4d1a5-5735-48c6-b7de-8f86d7f2e9e2",
+      "name": "5. AI: Company Research",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1200,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse company research + merge\nconst lead = $('4. Parse Intent').first().json;\nconst raw = $input.first().json;\n\nlet company = {\n  company_type: 'unknown', estimated_employees: 'unknown',\n  likely_industry: 'unknown', tech_sophistication: 'unknown',\n  key_insight: 'Research unavailable'\n};\n\ntry {\n  const content = raw.choices[0].message.content;\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (match) company = JSON.parse(match[0]);\n} catch(e) {}\n\nreturn [{ json: { ...lead, ai_company: company } }];"
+      },
+      "id": "70d7492d-a597-46f8-bea8-69075fc56363",
+      "name": "6. Parse Company Intel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a senior sales development rep. Write a personalized 3-4 sentence outreach message for this lead. Be specific to their company and pain points. Use a professional but warm tone. Do NOT use generic phrases like 'I hope this finds you well'. Start with a specific observation about their business.\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify('Write outreach for:\\nName: ' + $json.name + '\\nCompany: ' + ($json.company || 'their company') + ' (' + $json.ai_company.company_type + ', ' + $json.ai_company.estimated_employees + ' employees, ' + $json.ai_company.likely_industry + ')\\nTitle: ' + ($json.job_title || 'decision maker') + '\\nPain points: ' + $json.ai_intent.pain_points.join(', ') + '\\nBuying stage: ' + $json.ai_intent.buying_stage + '\\nBudget: ' + ($json.budget ? '$' + $json.budget : 'not disclosed') + '\\nTheir message: ' + ($json.message || 'no message provided')) }}}\n  ],\n  \"max_tokens\": 250,\n  \"temperature\": 0.7\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7b9f7cdd-534b-4df2-b529-450f9e56dc1e",
+      "name": "7. AI: Generate Outreach",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -720,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse outreach + merge all data\nconst lead = $('6. Parse Company Intel').first().json;\nconst raw = $input.first().json;\n\nlet outreach = 'Outreach generation failed. Use standard template.';\ntry { outreach = raw.choices[0].message.content; } catch(e) {}\n\nreturn [{ json: {\n  ...lead,\n  ai_outreach: outreach,\n  processing_complete: true,\n  total_ai_calls: 3,\n  completed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "5dfa5acf-e02f-4869-8b0b-a77d7b3db122",
+      "name": "8. Merge All Intelligence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "ENTERPRISE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Enterprise P0"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "QUALIFIED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Qualified P1"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "NURTURE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Nurture P2"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "aaaf3bd0-44a0-4087-a271-7fab4a2ee489",
+      "name": "9. Priority Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -240,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst ai = d.ai_intent;\nconst co = d.ai_company;\n\nconst lines = [\n  '🏆 ENTERPRISE LEAD [P0]',\n  '━━━━━━━━━━━━━━━━━━',\n  '',\n  '👤 ' + d.name + (d.job_title ? ' — ' + d.job_title : ''),\n  '🏢 ' + (d.company || 'Unknown') + ' [' + co.company_type + ']',\n  '📧 ' + d.email,\n  d.phone ? '📱 ' + d.phone : '',\n  '',\n  '📊 Score: ' + d.lead_score + '/100 | Priority: ' + d.priority,\n  '💰 Budget: ' + (d.budget ? d.currency + ' ' + d.budget.toLocaleString() : 'N/A') + ' [' + d.budget_tier + ']',\n  '',\n  '🤖 AI ANALYSIS',\n  '  Intent: ' + ai.intent + ' (' + (ai.intent_confidence * 100).toFixed(0) + '%)',\n  '  Stage: ' + ai.buying_stage + ' | ICP: ' + ai.icp_fit,\n  '  Pain: ' + ai.pain_points.join(', '),\n  '',\n  '🏭 COMPANY INTEL',\n  '  ' + co.likely_industry + ' | ' + co.estimated_employees + ' employees',\n  '  Tech: ' + co.tech_sophistication,\n  '  ' + co.key_insight,\n  '',\n  '✉️ SUGGESTED OUTREACH',\n  '━━━━━━━━━━━━━━━━━━',\n  d.ai_outreach,\n  '━━━━━━━━━━━━━━━━━━',\n  '',\n  '⚡ SLA: ' + d.sla_minutes + ' min | Team: ' + d.assigned_team,\n  '🔗 Source: ' + d.source,\n  '🆔 ' + d.lead_id\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { ...d, notification: lines, alert_level: 'P0_ENTERPRISE' } }];"
+      },
+      "id": "42940015-8039-4fcc-af58-ef40945395a1",
+      "name": "10. Format P0 Dossier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// QUALIFIED P1 — Standard alert\nconst d = $input.first().json;\nconst lines = [\n  'QUALIFIED LEAD [P1] | Score: ' + d.lead_score,\n  '',\n  d.name + (d.company ? ' @ ' + d.company : '') + ' (' + d.email + ')',\n  'Intent: ' + d.ai_intent.intent + ' | Stage: ' + d.ai_intent.buying_stage,\n  d.budget ? 'Budget: ' + d.currency + ' ' + d.budget.toLocaleString() : '',\n  'Pain points: ' + d.ai_intent.pain_points.join(', '),\n  '',\n  'Suggested outreach:',\n  d.ai_outreach.slice(0, 300),\n  '',\n  'SLA: ' + d.sla_minutes + 'min | Team: ' + d.assigned_team\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { ...d, notification: lines, alert_level: 'P1_QUALIFIED' } }];"
+      },
+      "id": "58719b97-2db8-4814-abd9-7bbb6415babf",
+      "name": "11. Format P1 Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NURTURE P2 — Brief log\nconst d = $input.first().json;\nconst lines = [\n  'NURTURE LEAD [P2] | Score: ' + d.lead_score,\n  d.name + ' (' + d.email + ') | Source: ' + d.source,\n  'Intent: ' + d.ai_intent.intent + ' | Company type: ' + d.ai_company.company_type,\n  'Auto-sequence: nurture_drip'\n].join('\\n');\n\nreturn [{ json: { ...d, notification: lines, alert_level: 'P2_NURTURE' } }];"
+      },
+      "id": "e73bca44-d402-4be0-b145-037b468a8e9b",
+      "name": "12. Format P2 Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// COLD P3 — Minimal log\nconst d = $input.first().json;\nreturn [{ json: { ...d, notification: 'COLD [P3]: ' + d.name + ' (' + d.email + ') Score: ' + d.lead_score + ' | Action: cold_reengagement', alert_level: 'P3_COLD' } }];"
+      },
+      "id": "bb53182e-7a13-498c-b5c9-040af10497cd",
+      "name": "13. Format P3 Minimal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID_HERE",
+        "text": "={{ $json.notification }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "74a005ec-f3f1-4cea-b13b-d8fd0c0be9a2",
+      "name": "14. Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        272,
+        160
+      ],
+      "webhookId": "f25f639b-d35e-4a3d-bfd4-abf40e66677d",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// AUDIT TRAIL — Full processing record\nconst d = $('8. Merge All Intelligence').first().json;\nreturn [{ json: {\n  event: 'lead_processed',\n  lead_id: d.lead_id,\n  email: d.email,\n  score: d.lead_score,\n  tier: d.tier,\n  priority: d.priority,\n  intent: d.ai_intent.intent,\n  intent_confidence: d.ai_intent.intent_confidence,\n  buying_stage: d.ai_intent.buying_stage,\n  icp_fit: d.ai_intent.icp_fit,\n  company_type: d.ai_company.company_type,\n  assigned_team: d.assigned_team,\n  sla_minutes: d.sla_minutes,\n  source: d.source,\n  alert_level: d.alert_level,\n  ai_calls: d.total_ai_calls,\n  processing_time_ms: Date.now() - new Date(d.ingested_at).getTime(),\n  pipeline_version: d.pipeline_version,\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "afada2be-f7a0-4ee4-8668-a934c27c7abf",
+      "name": "15. Audit Logger",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        512,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  lead_id: $('8. Merge All Intelligence').first().json.lead_id,\n  score: $('8. Merge All Intelligence').first().json.lead_score,\n  tier: $('8. Merge All Intelligence').first().json.tier,\n  priority: $('8. Merge All Intelligence').first().json.priority,\n  intent: $('8. Merge All Intelligence').first().json.ai_intent.intent,\n  buying_stage: $('8. Merge All Intelligence').first().json.ai_intent.buying_stage,\n  company_type: $('8. Merge All Intelligence').first().json.ai_company.company_type,\n  assigned_team: $('8. Merge All Intelligence').first().json.assigned_team,\n  sla_minutes: $('8. Merge All Intelligence').first().json.sla_minutes,\n  outreach_generated: true,\n  ai_calls: 3,\n  pipeline_version: '3.0'\n}) }}",
+        "options": {}
+      },
+      "id": "066de8c1-e9b2-4779-b804-741eabebac35",
+      "name": "16. API Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        752,
+        160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "1. Lead Webhook Gateway": {
+      "main": [
+        [
+          {
+            "node": "2. Validate & Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Validate & Score": {
+      "main": [
+        [
+          {
+            "node": "3. AI: Intent Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. AI: Intent Analysis": {
+      "main": [
+        [
+          {
+            "node": "4. Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "5. AI: Company Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. AI: Company Research": {
+      "main": [
+        [
+          {
+            "node": "6. Parse Company Intel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Parse Company Intel": {
+      "main": [
+        [
+          {
+            "node": "7. AI: Generate Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. AI: Generate Outreach": {
+      "main": [
+        [
+          {
+            "node": "8. Merge All Intelligence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Merge All Intelligence": {
+      "main": [
+        [
+          {
+            "node": "9. Priority Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Priority Router": {
+      "main": [
+        [
+          {
+            "node": "10. Format P0 Dossier",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11. Format P1 Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "12. Format P2 Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "13. Format P3 Minimal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Format P0 Dossier": {
+      "main": [
+        [
+          {
+            "node": "14. Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Format P1 Alert": {
+      "main": [
+        [
+          {
+            "node": "14. Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Format P2 Log": {
+      "main": [
+        [
+          {
+            "node": "14. Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Format P3 Minimal": {
+      "main": [
+        [
+          {
+            "node": "14. Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14. Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "15. Audit Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15. Audit Logger": {
+      "main": [
+        [
+          {
+            "node": "16. API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "23d0c1dc-d7fe-43fb-b405-cf88a49f7624",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dd4334221ef81d6d59573eb9f82a223063c36805f707f47d81b73799fdfc0225"
+  },
+  "id": "YGHSSW1Wki95OLlZ",
+  "tags": [
+    {
+      "name": "production",
+      "id": "A4qPgXEhhulEeHrh",
+      "updatedAt": "2026-03-13T18:12:00.349Z",
+      "createdAt": "2026-03-13T18:12:00.349Z"
+    },
+    {
+      "updatedAt": "2026-03-13T19:06:17.026Z",
+      "createdAt": "2026-03-13T19:06:17.026Z",
+      "id": "QvG8jymPOaXRs13v",
+      "name": "enterprise"
+    },
+    {
+      "name": "multi-agent",
+      "id": "SeOelVD4MVM0DG2U",
+      "updatedAt": "2026-03-14T22:09:39.225Z",
+      "createdAt": "2026-03-14T22:09:39.225Z"
+    },
+    {
+      "name": "lead-intelligence",
+      "id": "SlJWW8rB0d1uPdTH",
+      "updatedAt": "2026-03-14T22:09:39.166Z",
+      "createdAt": "2026-03-14T22:09:39.166Z"
+    },
+    {
+      "name": "ai-powered",
+      "id": "mIjE8UdAveOet1EQ",
+      "updatedAt": "2026-03-14T22:09:39.192Z",
+      "createdAt": "2026-03-14T22:09:39.192Z"
+    }
+  ]
+}

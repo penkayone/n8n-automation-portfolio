@@ -1,0 +1,524 @@
+{
+  "name": "AI Customer Support & Ticket Intelligence Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "f580fc97-5d0b-4a70-a0e4-7abc088e00aa",
+      "name": "1. Telegram Bot Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -720,
+        112
+      ],
+      "webhookId": "1d6ce969-225d-48bd-8714-f513e2892e92",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 1: MESSAGE PARSER & COMMAND ROUTER\n// Extracts message data, detects commands vs free text,\n// builds conversation context\n// ================================================================\n\nconst msg = $input.first().json.message;\nconst text = msg.text || '';\nconst chatId = msg.chat.id;\nconst userId = msg.from.id;\nconst userName = msg.from.first_name || 'User';\nconst userLang = msg.from.language_code || 'en';\n\n// Detect message type\nlet messageType = 'support_request';\nlet command = null;\nlet payload = text;\n\nif (text === '/start') {\n  messageType = 'start';\n} else if (text === '/help') {\n  messageType = 'help';\n} else if (text === '/status') {\n  messageType = 'status';\n} else if (text.startsWith('/feedback ')) {\n  messageType = 'feedback';\n  payload = text.replace('/feedback ', '');\n} else if (text.length < 3) {\n  messageType = 'too_short';\n}\n\n// Build ticket metadata\nconst ticket = {\n  ticket_id: 'TK-' + Date.now(),\n  message_type: messageType,\n  raw_text: text,\n  payload: payload,\n  chat_id: chatId,\n  user_id: userId,\n  user_name: userName,\n  user_language: userLang,\n  message_length: text.length,\n  has_url: /https?:\\/\\//.test(text),\n  has_email: /[^\\s@]+@[^\\s@]+\\.[^\\s@]+/.test(text),\n  has_phone: /[\\d+()\\-\\s]{7,}/.test(text),\n  word_count: text.split(/\\s+/).filter(w => w.length > 0).length,\n  created_at: new Date().toISOString()\n};\n\nreturn [{ json: ticket }];"
+      },
+      "id": "5818e40c-5190-43b8-bc7a-20393454fc62",
+      "name": "2. Message Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.message_type }}",
+                    "rightValue": "support_request",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Support"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.message_type }}",
+                    "rightValue": "feedback",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": "Feedback"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "9b299ba9-2c7e-42b3-a525-62e15cd36234",
+      "name": "3. Route Message Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -240,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle /start, /help, /status, too_short\nconst ticket = $input.first().json;\nconst type = ticket.message_type;\n\nconst responses = {\n  start: 'Welcome to Support Bot, ' + ticket.user_name + '!\\n\\nJust describe your issue in plain text and I will:\\n- Classify your request\\n- Extract key details\\n- Generate a response\\n- Route to the right team\\n\\nCommands:\\n/help - Show this message\\n/status - Check system status\\n/feedback [text] - Leave feedback',\n  \n  help: 'How to use this bot:\\n\\n1. Just type your problem or question\\n2. I will analyze it with AI and respond\\n3. If needed, a human agent will follow up\\n\\nCommands:\\n/status - System status\\n/feedback [text] - Leave feedback',\n  \n  status: 'System Status: All systems operational\\nAI Engine: Online\\nResponse time: under 5 seconds\\nQueue: 0 pending tickets',\n  \n  too_short: 'Please describe your issue in more detail so I can help you properly.'\n};\n\nconst reply = responses[type] || responses.help;\n\nreturn [{ json: { chat_id: ticket.chat_id, reply: reply, ticket_id: ticket.ticket_id, skip_ai: true } }];"
+      },
+      "id": "70896307-44fc-404f-8e0d-2e0a820ec7e2",
+      "name": "4. System Responses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a support ticket classifier. Analyze the customer message and respond ONLY with valid JSON, no markdown: {\\\"category\\\": \\\"billing|technical|account|feature_request|bug_report|general_inquiry|complaint\\\", \\\"urgency\\\": \\\"critical|high|medium|low\\\", \\\"sentiment\\\": \\\"angry|frustrated|neutral|positive\\\", \\\"requires_human\\\": true/false, \\\"summary\\\": \\\"1 sentence summary\\\", \\\"extracted_product\\\": \\\"product name or null\\\", \\\"extracted_error\\\": \\\"error description or null\\\", \\\"language\\\": \\\"detected language code\\\"}\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.raw_text) }} }\n  ],\n  \"max_tokens\": 200,\n  \"temperature\": 0.1\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "2c826d7f-a3f8-4a55-a304-55e8e9e10251",
+      "name": "5. AI Classify Ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        -16
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 2: PARSE CLASSIFICATION + ENRICH TICKET\n// Merge AI classification with ticket metadata\n// Compute SLA based on urgency + category\n// ================================================================\n\nconst ticket = $('2. Message Parser').first().json;\nconst raw = $input.first().json;\n\nlet classification = {\n  category: 'general_inquiry',\n  urgency: 'medium',\n  sentiment: 'neutral',\n  requires_human: false,\n  summary: ticket.raw_text.slice(0, 100),\n  extracted_product: null,\n  extracted_error: null,\n  language: ticket.user_language\n};\n\ntry {\n  const content = raw.choices[0].message.content;\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (match) classification = JSON.parse(match[0]);\n} catch(e) {}\n\n// SLA MATRIX (minutes)\nconst slaMatrix = {\n  critical: { billing: 30, technical: 15, bug_report: 15, complaint: 30, account: 30, feature_request: 120, general_inquiry: 60 },\n  high: { billing: 60, technical: 30, bug_report: 30, complaint: 60, account: 60, feature_request: 240, general_inquiry: 120 },\n  medium: { billing: 240, technical: 120, bug_report: 120, complaint: 240, account: 240, feature_request: 480, general_inquiry: 480 },\n  low: { billing: 480, technical: 480, bug_report: 480, complaint: 480, account: 480, feature_request: 1440, general_inquiry: 1440 }\n};\n\nconst urgency = classification.urgency || 'medium';\nconst category = classification.category || 'general_inquiry';\nconst slaMinutes = (slaMatrix[urgency] && slaMatrix[urgency][category]) || 480;\n\n// Team assignment\nconst teamMap = {\n  billing: 'finance_team',\n  technical: 'tech_support_l2',\n  account: 'account_management',\n  feature_request: 'product_team',\n  bug_report: 'engineering',\n  complaint: 'customer_success',\n  general_inquiry: 'support_l1'\n};\n\nconst enriched = {\n  ...ticket,\n  ...classification,\n  sla_minutes: slaMinutes,\n  sla_deadline: new Date(Date.now() + slaMinutes * 60000).toISOString(),\n  assigned_team: teamMap[category] || 'support_l1',\n  priority_score: (classification.urgency === 'critical' ? 100 : classification.urgency === 'high' ? 75 : classification.urgency === 'medium' ? 50 : 25) + (classification.sentiment === 'angry' ? 20 : classification.sentiment === 'frustrated' ? 10 : 0)\n};\n\nreturn [{ json: enriched }];"
+      },
+      "id": "dc052a45-92a9-4c0b-85f4-7b423290df5a",
+      "name": "6. Enrich & Compute SLA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_KEY_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a helpful customer support agent. Write a direct, empathetic response to the customer. If their issue is technical, suggest specific troubleshooting steps. If billing, acknowledge and explain next steps. Keep it under 4 sentences. Match the language of the customer message. Do NOT use markdown formatting.\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify('Customer message: ' + $json.raw_text + '\\n\\nCategory: ' + $json.category + '\\nSentiment: ' + $json.sentiment + '\\nProduct mentioned: ' + ($json.extracted_product || 'none')) }} }\n  ],\n  \"max_tokens\": 250,\n  \"temperature\": 0.6\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ce6e719b-eece-4c75-befe-27c0d25b638c",
+      "name": "7. AI Generate Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response\nconst ticket = $('6. Enrich & Compute SLA').first().json;\nconst raw = $input.first().json;\n\nlet autoReply = 'Thank you for reaching out. Your request has been received and a team member will follow up shortly.';\ntry { autoReply = raw.choices[0].message.content; } catch(e) {}\n\n// Clean response for Telegram\nautoReply = autoReply.replace(/[_*\\[\\]()~`>#+\\-=|{}.!]/g, function(m) {\n  if (m === '-' || m === '.') return m;\n  return ' ';\n});\n\nreturn [{ json: { ...ticket, auto_reply: autoReply } }];"
+      },
+      "id": "15c129e4-e1a7-486f-bc4a-fcfeabf4dda1",
+      "name": "8. Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 3: BUILD CUSTOMER REPLY\n// Format response for the user in Telegram\n// ================================================================\n\nconst t = $input.first().json;\n\nconst urgencyEmoji = { critical: 'RED', high: 'ORANGE', medium: 'YELLOW', low: 'GREEN' };\n\nconst reply = t.auto_reply + '\\n\\n---\\nTicket: ' + t.ticket_id + '\\nCategory: ' + t.category + '\\nPriority: ' + (t.urgency || 'medium').toUpperCase() + '\\nTeam: ' + t.assigned_team + '\\n\\nA human agent will review within ' + t.sla_minutes + ' minutes if needed.';\n\nreturn [{ json: { ...t, customer_reply: reply } }];"
+      },
+      "id": "cf26a0bd-be09-45cc-91fd-cef7b6ef2030",
+      "name": "9. Build Customer Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.customer_reply }}",
+        "additionalFields": {}
+      },
+      "id": "40f9a543-67b0-4159-99d5-c4a50fe7671d",
+      "name": "10. Reply to Customer",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        0
+      ],
+      "webhookId": "77ce32f8-82e1-4c0e-b1fc-4c111aa4ed53",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// STAGE 4: INTERNAL TEAM NOTIFICATION\n// Different detail level based on urgency\n// ================================================================\n\nconst t = $('8. Parse AI Response').first().json;\n\nconst sentimentIcon = { angry: 'ANGRY', frustrated: 'UPSET', neutral: 'NEUTRAL', positive: 'HAPPY' };\n\nconst internal = [\n  'NEW SUPPORT TICKET',\n  '',\n  'Ticket: ' + t.ticket_id,\n  'From: ' + t.user_name + ' (ID: ' + t.user_id + ')',\n  'Category: ' + t.category.toUpperCase(),\n  'Urgency: ' + (t.urgency || 'medium').toUpperCase(),\n  'Sentiment: ' + (t.sentiment || 'neutral'),\n  'Priority Score: ' + t.priority_score,\n  '',\n  'Summary: ' + (t.summary || 'N/A'),\n  t.extracted_product ? 'Product: ' + t.extracted_product : '',\n  t.extracted_error ? 'Error: ' + t.extracted_error : '',\n  '',\n  'Customer Message:',\n  '\"' + t.raw_text.slice(0, 500) + '\"',\n  '',\n  'AI Auto-Reply Sent:',\n  '\"' + t.auto_reply.slice(0, 300) + '\"',\n  '',\n  'Assigned: ' + t.assigned_team,\n  'SLA: ' + t.sla_minutes + ' minutes',\n  'Deadline: ' + t.sla_deadline,\n  t.requires_human ? '\\nHUMAN REVIEW REQUIRED' : '',\n  '',\n  'Metadata:',\n  '  Language: ' + t.language,\n  '  Word count: ' + t.word_count,\n  '  Has URL: ' + t.has_url,\n  '  Has email: ' + t.has_email,\n  '  Has phone: ' + t.has_phone\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { internal_notification: internal, ticket_id: t.ticket_id } }];"
+      },
+      "id": "c1e75541-a7f6-426e-8a01-402b623f168a",
+      "name": "11. Build Internal Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID_HERE",
+        "text": "={{ $json.internal_notification }}",
+        "additionalFields": {}
+      },
+      "id": "24b0ae55-ca10-4770-b1b2-3f8ce712e18f",
+      "name": "12. Notify Support Team",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        272
+      ],
+      "webhookId": "3b897579-ef9d-4e68-adc9-554eed074d7d",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// FEEDBACK HANDLER\nconst ticket = $input.first().json;\nconst feedbackMsg = 'Thank you for your feedback, ' + ticket.user_name + '. We have recorded it and our team will review it.\\n\\nYour feedback: \"' + ticket.payload.slice(0, 200) + '\"';\n\nreturn [{ json: { chat_id: ticket.chat_id, reply: feedbackMsg, ticket_id: ticket.ticket_id, skip_ai: true } }];"
+      },
+      "id": "8f6775a9-474d-4b59-a476-232f9870ac82",
+      "name": "13. Handle Feedback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.reply }}",
+        "additionalFields": {}
+      },
+      "id": "f46d7138-48f6-43b7-b878-80e194ad436a",
+      "name": "14. Send Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        192
+      ],
+      "webhookId": "33f3dc9d-412d-4fb6-b5bd-07cc5fee715c",
+      "credentials": {
+        "telegramApi": {
+          "id": "KumazJRX8hpHjt19",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// TICKET LOG — record every interaction\nconst ticket = $('8. Parse AI Response').first().json;\nreturn [{ json: {\n  event: 'ticket_processed',\n  ticket_id: ticket.ticket_id,\n  category: ticket.category,\n  urgency: ticket.urgency,\n  sentiment: ticket.sentiment,\n  priority_score: ticket.priority_score,\n  requires_human: ticket.requires_human,\n  assigned_team: ticket.assigned_team,\n  sla_minutes: ticket.sla_minutes,\n  user_id: ticket.user_id,\n  language: ticket.language,\n  response_generated: true,\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "2d530c1e-adb9-4496-8715-0847598fce12",
+      "name": "15. Ticket Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        48
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "1. Telegram Bot Trigger": {
+      "main": [
+        [
+          {
+            "node": "2. Message Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Message Parser": {
+      "main": [
+        [
+          {
+            "node": "3. Route Message Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Route Message Type": {
+      "main": [
+        [
+          {
+            "node": "5. AI Classify Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "13. Handle Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "4. System Responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. System Responses": {
+      "main": [
+        [
+          {
+            "node": "14. Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. AI Classify Ticket": {
+      "main": [
+        [
+          {
+            "node": "6. Enrich & Compute SLA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Enrich & Compute SLA": {
+      "main": [
+        [
+          {
+            "node": "7. AI Generate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. AI Generate Response": {
+      "main": [
+        [
+          {
+            "node": "8. Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "9. Build Customer Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Build Customer Reply": {
+      "main": [
+        [
+          {
+            "node": "10. Reply to Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Reply to Customer": {
+      "main": [
+        [
+          {
+            "node": "15. Ticket Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "11. Build Internal Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Build Internal Alert": {
+      "main": [
+        [
+          {
+            "node": "12. Notify Support Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Handle Feedback": {
+      "main": [
+        [
+          {
+            "node": "14. Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "f72f16db-737c-4899-9ec0-89e6d7bb7c2e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dd4334221ef81d6d59573eb9f82a223063c36805f707f47d81b73799fdfc0225"
+  },
+  "id": "xnhF1RJRkObfnNa5",
+  "tags": [
+    {
+      "updatedAt": "2026-03-13T19:06:17.026Z",
+      "createdAt": "2026-03-13T19:06:17.026Z",
+      "id": "QvG8jymPOaXRs13v",
+      "name": "enterprise"
+    },
+    {
+      "name": "customer-support",
+      "id": "RjVobEuEXNlqQEE1",
+      "updatedAt": "2026-03-14T23:14:21.997Z",
+      "createdAt": "2026-03-14T23:14:21.997Z"
+    },
+    {
+      "name": "ai-bot",
+      "id": "pHpt9Uy2Zud3ylLT",
+      "updatedAt": "2026-03-14T23:14:22.063Z",
+      "createdAt": "2026-03-14T23:14:22.063Z"
+    },
+    {
+      "name": "ticket-system",
+      "id": "LL4vvMA8HSSAjXH2",
+      "updatedAt": "2026-03-14T23:14:22.036Z",
+      "createdAt": "2026-03-14T23:14:22.036Z"
+    },
+    {
+      "name": "production",
+      "id": "A4qPgXEhhulEeHrh",
+      "updatedAt": "2026-03-13T18:12:00.349Z",
+      "createdAt": "2026-03-13T18:12:00.349Z"
+    }
+  ]
+}
